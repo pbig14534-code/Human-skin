@@ -1,4 +1,4 @@
-const API_BASE_URL = "http://localhost:8000";
+const API_BASE_URL = "https://human-skin.onrender.com";
 
 const dropzone = document.getElementById("dropzone");
 const fileInput = document.getElementById("file-input");
