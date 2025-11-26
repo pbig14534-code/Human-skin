@@ -1,19 +1,18 @@
 """
-Bio-Vision Phase-1 — Backend API
+Bio-Vision Phase-1 — Backend API (Simplified)
+
 FastAPI + PyTorch demo for single-image medical (skin / wound) analysis.
 
-All UI text and comments are in English.
-This backend exposes two main endpoints:
-
+Endpoints:
 - POST /infer   : run inference on a single uploaded image
-- POST /cleanup : optionally delete temporary files for a given inference_id
-
-You can plug in your trained MobileNetV3 model by placing a checkpoint file
-in `backend/models/mobilenetv3_phase1_best.pt`.
+- POST /cleanup : optionally delete temporary heatmap files
+- GET  /health  : simple health check
 """
 
+import os
 import time
 import uuid
+from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -30,6 +29,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+# ===================== Paths & Constants =====================
 
 APP_ROOT = Path(__file__).resolve().parent
 MODEL_DIR = APP_ROOT / "models"
@@ -52,6 +52,9 @@ CLASS_NAMES: List[str] = [
 ]
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+torch.set_grad_enabled(False)
+
+# ===================== Model =====================
 
 
 def build_model(num_classes: int) -> nn.Module:
@@ -63,13 +66,7 @@ def build_model(num_classes: int) -> nn.Module:
 
 
 def load_checkpoint(model: nn.Module, ckpt_path: Path) -> None:
-    """
-    Load model weights from a checkpoint file.
-
-    The checkpoint may be:
-    - a plain state_dict
-    - or a dict containing "model_state", "model_state_dict" or "state_dict".
-    """
+    """Load model weights from checkpoint file if available."""
     if not ckpt_path.exists():
         print(f"[WARN] Checkpoint not found at {ckpt_path}. Using random weights.")
         return
@@ -112,29 +109,7 @@ _preprocess = transforms.Compose(
     ]
 )
 
-
-class SessionData(BaseModel):
-    heatmap_path: Optional[str] = None
-
-
-SESSIONS: Dict[str, SessionData] = {}
-
-
-app = FastAPI(
-    title="Bio-Vision Phase-1 API",
-    description="Single-image skin / wound analysis with MobileNetV3 (demo).",
-    version="1.0.0",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+# ===================== Schemas =====================
 
 
 class TopKItem(BaseModel):
@@ -176,6 +151,33 @@ class CleanupResponse(BaseModel):
     ok: bool
 
 
+class SessionData(BaseModel):
+    heatmap_path: Optional[str] = None
+
+
+SESSIONS: Dict[str, SessionData] = {}
+
+# ===================== FastAPI App =====================
+
+app = FastAPI(
+    title="Bio-Vision Phase-1 API",
+    description="Single-image skin / wound analysis with MobileNetV3 (demo).",
+    version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# ===================== Helpers =====================
+
+
 def _check_file_type(upload: UploadFile) -> None:
     if upload.content_type not in ("image/jpeg", "image/png", "image/jpg"):
         raise HTTPException(
@@ -189,7 +191,7 @@ def _load_image_bytes(upload: UploadFile) -> Image.Image:
     if not data:
         raise HTTPException(status_code=400, detail="Received empty file.")
     try:
-        img = Image.open(bytes(data)).convert("RGB")
+        img = Image.open(BytesIO(data)).convert("RGB")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed to read image: {exc}")
     return img
@@ -224,6 +226,9 @@ def _make_fake_heatmap(img: Image.Image, inference_id: str) -> str:
     heatmap_path = HEATMAP_DIR / f"{inference_id}_heatmap.png"
     heatmap_img.save(heatmap_path)
     return f"/static/heatmaps/{heatmap_path.name}"
+
+
+# ===================== Endpoints =====================
 
 
 @app.post("/infer", response_model=InferenceResponse)
@@ -292,3 +297,12 @@ async def cleanup(req: CleanupRequest) -> CleanupResponse:
 @app.get("/health")
 async def health() -> Dict[str, str]:
     return {"status": "ok", "device": DEVICE}
+
+
+# ===================== Local Run (for Render) =====================
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run("app:app", host="0.0.0.0", port=port)
